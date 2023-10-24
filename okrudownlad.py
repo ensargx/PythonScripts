@@ -167,10 +167,12 @@ def concat_parts():
                 outfile.write(infile.read())
             count += 1
 
-def download_one_part(video_link, video_size, part_number):
-    part_size = video_size // 20
+def download_one_part(video_link, video_size, part_number, thread_count = 20):
+    part_size = video_size // thread_count
     range_start = (part_number - 1) * part_size
     range_end = part_number * part_size - 1
+    if part_number == thread_count:
+        range_end = video_size
     print("Downloading part {}, Range: {}-{}".format(part_number, range_start, range_end)) 
     download_and_save(video_link, f"part_{part_number}.mp4", range_start, range_end)
 
@@ -183,8 +185,21 @@ def clear_files():
 find_generic_url()
 video_link = get_video_link()
 video_size = get_video_size(video_link)
-print(f"Video size: {video_size}")
-thread_count = 20
-download_all_part(video_size, thread_count)
+download_one_part(video_link, video_size, 7)
 concat_parts()
 clear_files()
+exit(0)
+
+if __name__ == "__main__":
+    argc = len(os.sys.argv)
+    if argc > 1:
+        VIDEO_URL = os.sys.argv[1]
+
+    find_generic_url()
+    video_link = get_video_link()
+    video_size = get_video_size(video_link)
+    print(f"Video size: {video_size}")
+    thread_count = 20
+    download_all_part(video_size, thread_count)
+    concat_parts()
+    clear_files()
