@@ -3,10 +3,15 @@ import os
 import threading
 import time
 import re
+import argparse
 
-VIDEO_URL = "https://m.ok.ru/video/3187538135640"
+VIDEO_URL = ""
+THREAD_COUNT = 20
+INTERVAL = 3
+
 GENERIC_URL = ""
 PARTS_DOWNLOADING = []
+TEMP_DIR = "temp_download"
 
 HEADERS = {
     'Accept-Encoding': 'identity;q=1, *;q=0',
@@ -105,7 +110,10 @@ def download_video_nsize(video_link, range_start, range_end):
     return r.content
 
 def save_raw_bytes(filename, raw_bytes):
-    with open(filename, 'wb') as f:
+    # Go in temp directory, if not exists create it
+    if not os.path.exists(TEMP_DIR):
+        os.makedirs(TEMP_DIR)
+    with open(os.path.join(TEMP_DIR, filename), "wb") as f:
         f.write(raw_bytes)
 
 def download_and_save(video_link, filename, range_start, range_end):
@@ -143,7 +151,7 @@ def download_all_part(video_size, thread_count = 20):
             return
         
         threading.Thread(target=download_and_save, args=(new_link, f"part_{part_count}.mp4", start_offset, end_offset), name=part_count).start()
-        time.sleep(5)
+        time.sleep(INTERVAL)
         # download_and_save(new_link, f"part_{part_count}.mp4", i, i + part_size - 1)
         part_count += 1
 
@@ -159,13 +167,15 @@ def download_all_part(video_size, thread_count = 20):
     print("All parts are downloaded")
     return
 
-def concat_parts():
+def concat_parts(output_filename):
     count = 1
-    with open("output.mp4", "wb") as outfile:
-        while os.path.exists(f"part_{count}.mp4"):
-            with open(f"part_{count}.mp4", "rb") as infile:
+    with open(output_filename, "wb") as outfile:
+        path = os.path.join(TEMP_DIR, f"part_{count}.mp4")
+        while os.path.exists(path):
+            with open(path, "rb") as infile:
                 outfile.write(infile.read())
             count += 1
+            path = os.path.join(TEMP_DIR, f"part_{count}.mp4")
 
 def download_one_part(video_link, video_size, part_number, thread_count = 20):
     part_size = video_size // thread_count
@@ -178,28 +188,49 @@ def download_one_part(video_link, video_size, part_number, thread_count = 20):
 
 def clear_files():
     count = 1
-    while os.path.exists(f"part_{count}.mp4"):
-        os.remove(f"part_{count}.mp4")
+    path = os.path.join(TEMP_DIR, f"part_{count}.mp4")
+    while os.path.exists(path):
+        os.remove(path)
         count += 1
-
-find_generic_url()
-video_link = get_video_link()
-video_size = get_video_size(video_link)
-download_one_part(video_link, video_size, 7)
-concat_parts()
-clear_files()
-exit(0)
+        path = os.path.join(TEMP_DIR, f"part_{count}.mp4")  
+    os.rmdir(TEMP_DIR)
 
 if __name__ == "__main__":
-    argc = len(os.sys.argv)
-    if argc > 1:
-        VIDEO_URL = os.sys.argv[1]
+
+    parser = argparse.ArgumentParser(description='Ok.ru video downloader')
+    # Example usage: python okrudownload.py -o output.mp4 -t 20 -i 5 https://m.ok.ru/video/3187538135640
+    parser.add_argument('url', metavar='url', type=str, help='Video url')
+    parser.add_argument('-o', '--output', default='./output.mp4', metavar='output', type=str, help='Output filename')
+    parser.add_argument('-t', '--threads', default=20, metavar='threads', type=int, help='Thread count')
+    parser.add_argument('-i', '--interval', default=3, metavar='interval', type=int, help='Interval between threads')
+
+    # Or example usage: python okrudownload.py -p 5 https://m.ok.ru/video/3187538135640 ; thread count must be same
+    parser.add_argument('-p', '--part', metavar='part', type=int, help='Download one part, thread count must be same as first download')
+    parser.add_argument('-c', '--concat', action='store_true', help='Concat parts')
+
+    args = parser.parse_args()
+    VIDEO_URL = args.url
+    THREAD_COUNT = args.threads
+    INTERVAL = args.interval
+
+    # Create TEMP directory if not exists
+    if not os.path.exists(TEMP_DIR):
+        os.makedirs(TEMP_DIR)
+
+    if args.part is not None:
+        GENERIC_URL = find_generic_url()
+        video_link = get_video_link()
+        video_size = get_video_size(video_link)
+        download_one_part(video_link, video_size, args.part, THREAD_COUNT)
+        if args.concat:
+            concat_parts()
+            clear_files()
+        exit(0)
 
     find_generic_url()
     video_link = get_video_link()
     video_size = get_video_size(video_link)
     print(f"Video size: {video_size}")
-    thread_count = 20
-    download_all_part(video_size, thread_count)
-    concat_parts()
+    download_all_part(video_size, THREAD_COUNT)
+    concat_parts(args.output)
     clear_files()
