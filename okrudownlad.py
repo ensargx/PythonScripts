@@ -9,6 +9,10 @@ VIDEO_URL = ""
 THREAD_COUNT = 20
 INTERVAL = 3
 
+VIDEO_SIZE = 0
+IS_DOWNLOADING = False
+DOWNLOAD_SPEED = 0
+TOTAL_DOWNLOADED = 0
 GENERIC_URL = ""
 PARTS_DOWNLOADING = []
 TEMP_DIR = "temp_download"
@@ -98,6 +102,7 @@ def get_video_size(url):
     return int(r.headers['content-length'])
 
 def download_video_nsize(video_link, range_start, range_end):
+    global DOWNLOAD_SPEED, TOTAL_DOWNLOADED
     headers = HEADERS.copy()
     headers['Range'] = 'bytes={}-{}'.format(range_start, range_end)
     r = requests.get(video_link, headers=headers, stream=True)
@@ -106,8 +111,30 @@ def download_video_nsize(video_link, range_start, range_end):
         print(r.headers)
         print(r.text)
         return None
-    print(f"Downloaded {range_start}-{range_end} bytes, Total: {len(r.content)} bytes")
-    return r.content
+    # print(f"Downloaded {range_start}-{range_end} bytes, Total: {len(r.content)} bytes")
+    raw_data = b''
+    bytes_downloaded = 0
+    start_time = time.time() - 1
+    old_speed = 0
+    for chunk in r.iter_content(chunk_size=1024):
+        if chunk:
+            raw_data += chunk
+            bytes_downloaded += len(chunk)
+            speed = round(bytes_downloaded / (time.time() - start_time) / 1024, 2)
+            DOWNLOAD_SPEED += speed
+            DOWNLOAD_SPEED -= old_speed
+            old_speed = speed
+            TOTAL_DOWNLOADED += len(chunk)
+            # print(f"Downloaded {bytes_downloaded}/{total_size} bytes ({progress}%), Speed: {speed} KB/s", end='\r')
+            if len (raw_data) >= range_end - range_start + 1:
+                DOWNLOAD_SPEED -= old_speed
+                break
+    # print()
+    if len(raw_data) != range_end - range_start + 1:
+        ...
+        # print("Error: Downloaded data size is not equal to requested size")
+        # print(f"Raw data length: {len(raw_data)}, Requested size: {range_end - range_start}, range_end: {range_end}, range_start: {range_start}")
+    return raw_data
 
 def save_raw_bytes(filename, raw_bytes):
     # Go in temp directory, if not exists create it
@@ -123,27 +150,29 @@ def download_and_save(video_link, filename, range_start, range_end):
     if raw_bytes is None:
         print("Error: Download failed")
         return
-    print("Saving to {}, size: {}".format(filename, len(raw_bytes)))
+    # print("Saving to {}, size: {}".format(filename, len(raw_bytes)))
     save_raw_bytes(filename, raw_bytes)
     PARTS_DOWNLOADING.remove(threading.current_thread().name)
     remainings = ', '.join([str(x) for x in PARTS_DOWNLOADING])
     if len(remainings) == 0:
         remainings = "None"
-    print("Part {} is done, remaining parts: {}".format(threading.current_thread().name, remainings))
+    # print("Part {} is done, remaining parts: {}".format(threading.current_thread().name, remainings))
 
 def download_all_part(video_size, thread_count = 20):
+    global IS_DOWNLOADING
     # 20 part olcak, toplam size video_size'yi verecek
     part_size = video_size // thread_count
-    print("Part size: {}".format(part_size))
+    # print("Part size: {}".format(part_size))
     part_count = 1
 
+    IS_DOWNLOADING = True
     for i in range(0, thread_count):
         start_offset = i * part_size
         end_offset = start_offset + part_size - 1
         if i == thread_count - 1:
             end_offset = video_size
 
-        print("Downloading part {}, Range: {}-{}".format(part_count, start_offset, end_offset)) 
+        # print("Downloading part {}, Range: {}-{}".format(part_count, start_offset, end_offset)) 
 
         new_link = get_video_link()
         if new_link is None:
@@ -162,9 +191,9 @@ def download_all_part(video_size, thread_count = 20):
         """
 
     # Wait until all threads are done
-    while threading.active_count() > 1:
+    while threading.active_count() > 2:
         time.sleep(1)
-    print("All parts are downloaded")
+    IS_DOWNLOADING = False
     return
 
 def concat_parts(output_filename):
@@ -176,6 +205,39 @@ def concat_parts(output_filename):
                 outfile.write(infile.read())
             count += 1
             path = os.path.join(TEMP_DIR, f"part_{count}.mp4")
+
+def print_download_speed():
+    global DOWNLOAD_SPEED, TOTAL_DOWNLOADED, IS_DOWNLOADING
+    while not IS_DOWNLOADING:
+        time.sleep(1)
+    while TOTAL_DOWNLOADED == 0:
+        time.sleep(1)
+    while VIDEO_SIZE == 0:
+        time.sleep(1)
+    DOWNLOAD_BAR_LEN = 50
+    time_start = time.time()
+    while IS_DOWNLOADING:
+        time.sleep(0.01)
+        time_now = time.time()
+        elapsed_time = time_now - time_start
+        elapsed_hours = int(elapsed_time // 3600)
+        elapsed_minutes = int((elapsed_time - elapsed_hours * 3600) // 60)
+        elapsed_seconds = int(elapsed_time - elapsed_hours * 3600 - elapsed_minutes * 60)
+        elapsed_time_str = f"[Elapsed Time: {elapsed_hours:02}:{elapsed_minutes:02}:{elapsed_seconds:02}]"
+        downloaded_perc = round(TOTAL_DOWNLOADED / VIDEO_SIZE * 100, 2)
+        downloaded_perc_bar = int(downloaded_perc * DOWNLOAD_BAR_LEN // 100)
+        downloaded_bar = "[" + "█" * downloaded_perc_bar + "-" * (DOWNLOAD_BAR_LEN - downloaded_perc_bar) + "]"
+        bar = f"{elapsed_time_str} {downloaded_bar} {downloaded_perc}%"
+        print(bar, end='\r')
+        mean_speed = round(TOTAL_DOWNLOADED / (time_now - time_start) / 1024, 2)
+
+    downloaded_perc = 100
+    downloaded_perc_bar = int(downloaded_perc * DOWNLOAD_BAR_LEN // 100)
+    downloaded_bar = "[" + "█" * downloaded_perc_bar + "-" * (DOWNLOAD_BAR_LEN - downloaded_perc_bar) + "]"
+    bar = f"{elapsed_time_str} {downloaded_bar} {downloaded_perc}%"
+    print(bar)
+        # print("Download speed: {:.2f} KB/s, Mean Download Speed: {:.2f} KB/s, Total downloaded: {:.2f} KB".format(round(DOWNLOAD_SPEED, 2), mean_speed, round(TOTAL_DOWNLOADED / 1024, 2)), end='\r')
+    # print()
 
 def download_one_part(video_link, video_size, part_number, thread_count = 20):
     part_size = video_size // thread_count
@@ -221,6 +283,7 @@ if __name__ == "__main__":
         GENERIC_URL = find_generic_url()
         video_link = get_video_link()
         video_size = get_video_size(video_link)
+        VIDEO_SIZE = video_size
         download_one_part(video_link, video_size, args.part, THREAD_COUNT)
         if args.concat:
             concat_parts()
@@ -230,7 +293,9 @@ if __name__ == "__main__":
     find_generic_url()
     video_link = get_video_link()
     video_size = get_video_size(video_link)
-    print(f"Video size: {video_size}")
+    VIDEO_SIZE = video_size
+    # print(f"Video size: {video_size}")
+    threading.Thread(target=print_download_speed).start()
     download_all_part(video_size, THREAD_COUNT)
     concat_parts(args.output)
     clear_files()
