@@ -4,6 +4,8 @@ import threading
 import time
 import re
 import argparse
+import multiprocessing
+import io
 
 VIDEO_URL = ""
 THREAD_COUNT = 20
@@ -101,8 +103,7 @@ def get_video_size(url):
         return None
     return int(r.headers['content-length'])
 
-def download_video_nsize(video_link, range_start, range_end):
-    global DOWNLOAD_SPEED, TOTAL_DOWNLOADED
+def download_video_nsize(video_link, range_start, range_end, filename):
     headers = HEADERS.copy()
     headers['Range'] = 'bytes={}-{}'.format(range_start, range_end)
     r = requests.get(video_link, headers=headers, stream=True)
@@ -112,51 +113,38 @@ def download_video_nsize(video_link, range_start, range_end):
         print(r.text)
         return None
     # print(f"Downloaded {range_start}-{range_end} bytes, Total: {len(r.content)} bytes")
-    raw_data = b''
     bytes_downloaded = 0
-    start_time = time.time() - 1
-    old_speed = 0
-    for chunk in r.iter_content(chunk_size=1024):
-        if chunk:
-            raw_data += chunk
-            bytes_downloaded += len(chunk)
-            speed = round(bytes_downloaded / (time.time() - start_time) / 1024, 2)
-            DOWNLOAD_SPEED += speed
-            DOWNLOAD_SPEED -= old_speed
-            old_speed = speed
-            TOTAL_DOWNLOADED += len(chunk)
-            # print(f"Downloaded {bytes_downloaded}/{total_size} bytes ({progress}%), Speed: {speed} KB/s", end='\r')
-            if len (raw_data) >= range_end - range_start + 1:
-                DOWNLOAD_SPEED -= old_speed
-                break
-    # print()
-    if len(raw_data) != range_end - range_start + 1:
+    out_file = os.path.join(TEMP_DIR, filename)
+    for chunk in r.iter_content(chunk_size=4096):
+        if not chunk:
+            continue
+        with io.open(out_file, "ab") as f:
+            f.write(chunk)
+        bytes_downloaded += len(chunk)
+        # print(f"Downloaded {bytes_downloaded}/{total_size} bytes ({progress}%), Speed: {speed} KB/s", end='\r')
+    if bytes_downloaded != range_end - range_start + 1:
         ...
         # print("Error: Downloaded data size is not equal to requested size")
         # print(f"Raw data length: {len(raw_data)}, Requested size: {range_end - range_start}, range_end: {range_end}, range_start: {range_start}")
-    return raw_data
 
 def save_raw_bytes(filename, raw_bytes):
     # Go in temp directory, if not exists create it
+    print("Saving to {}/{}".format(TEMP_DIR, filename))
     if not os.path.exists(TEMP_DIR):
         os.makedirs(TEMP_DIR)
-    with open(os.path.join(TEMP_DIR, filename), "wb") as f:
+    with io.open(os.path.join(TEMP_DIR, filename), "wb") as f:
         f.write(raw_bytes)
 
-def download_and_save(video_link, filename, range_start, range_end):
-    global PARTS_DOWNLOADING
-    PARTS_DOWNLOADING.append(threading.current_thread().name)
-    raw_bytes = download_video_nsize(video_link, range_start, range_end)
+def download_and_save(queue, video_link, filename, range_start, range_end):
+    # raw_bytes = download_video_nsize(video_link, range_start, range_end, filename)
+    download_video_nsize(video_link, range_start, range_end, filename)
+    """
     if raw_bytes is None:
         print("Error: Download failed")
         return
-    # print("Saving to {}, size: {}".format(filename, len(raw_bytes)))
-    save_raw_bytes(filename, raw_bytes)
-    PARTS_DOWNLOADING.remove(threading.current_thread().name)
-    remainings = ', '.join([str(x) for x in PARTS_DOWNLOADING])
-    if len(remainings) == 0:
-        remainings = "None"
-    # print("Part {} is done, remaining parts: {}".format(threading.current_thread().name, remainings))
+    # save_raw_bytes(filename, raw_bytes)
+    """
+    queue.put("done")
 
 def download_all_part(video_size, thread_count = 20):
     global IS_DOWNLOADING
@@ -164,6 +152,10 @@ def download_all_part(video_size, thread_count = 20):
     part_size = video_size // thread_count
     # print("Part size: {}".format(part_size))
     part_count = 1
+
+    print("Part size: {}".format(part_size))    
+
+    queue = multiprocessing.Queue()
 
     IS_DOWNLOADING = True
     for i in range(0, thread_count):
@@ -179,7 +171,8 @@ def download_all_part(video_size, thread_count = 20):
             print("Error: get_video_link failed")
             return
         
-        threading.Thread(target=download_and_save, args=(new_link, f"part_{part_count}.mp4", start_offset, end_offset), name=part_count).start()
+        # threading.Thread(target=download_and_save, args=(new_link, f"part_{part_count}.mp4", start_offset, end_offset), name=part_count).start()
+        multiprocessing.Process(target=download_and_save, args=(queue, new_link, f"part_{part_count}.mp4", start_offset, end_offset), name=str(part_count)).start()
         time.sleep(INTERVAL)
         # download_and_save(new_link, f"part_{part_count}.mp4", i, i + part_size - 1)
         part_count += 1
@@ -191,8 +184,13 @@ def download_all_part(video_size, thread_count = 20):
         """
 
     # Wait until all threads are done
-    while threading.active_count() > 2:
-        time.sleep(1)
+    total_finished = 0
+    while 1:
+        msg = queue.get()
+        if msg == "done":
+            total_finished += 1
+        if total_finished == thread_count:
+            break
     IS_DOWNLOADING = False
     return
 
@@ -207,10 +205,8 @@ def concat_parts(output_filename):
             path = os.path.join(TEMP_DIR, f"part_{count}.mp4")
 
 def print_download_speed():
-    global DOWNLOAD_SPEED, TOTAL_DOWNLOADED, IS_DOWNLOADING
+    global DOWNLOAD_SPEED, TOTAL_DOWNLOADED, IS_DOWNLOADING, VIDEO_SIZE
     while not IS_DOWNLOADING:
-        time.sleep(1)
-    while TOTAL_DOWNLOADED == 0:
         time.sleep(1)
     while VIDEO_SIZE == 0:
         time.sleep(1)
@@ -263,7 +259,7 @@ if __name__ == "__main__":
     # Example usage: python okrudownload.py -o output.mp4 -t 20 -i 5 https://m.ok.ru/video/3187538135640
     parser.add_argument('url', metavar='url', type=str, help='Video url')
     parser.add_argument('-o', '--output', default='./output.mp4', metavar='output', type=str, help='Output filename')
-    parser.add_argument('-t', '--threads', default=20, metavar='threads', type=int, help='Thread count')
+    parser.add_argument('-t', '--threads', default=5, metavar='threads', type=int, help='Thread count')
     parser.add_argument('-i', '--interval', default=3, metavar='interval', type=int, help='Interval between threads')
 
     # Or example usage: python okrudownload.py -p 5 https://m.ok.ru/video/3187538135640 ; thread count must be same
@@ -273,7 +269,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     VIDEO_URL = args.url
     THREAD_COUNT = args.threads
-    INTERVAL = args.interval
+    INTERVAL = int(args.interval)
 
     # Create TEMP directory if not exists
     if not os.path.exists(TEMP_DIR):
@@ -295,7 +291,7 @@ if __name__ == "__main__":
     video_size = get_video_size(video_link)
     VIDEO_SIZE = video_size
     # print(f"Video size: {video_size}")
-    threading.Thread(target=print_download_speed).start()
+    # threading.Thread(target=print_download_speed).start()
     download_all_part(video_size, THREAD_COUNT)
     concat_parts(args.output)
     clear_files()
